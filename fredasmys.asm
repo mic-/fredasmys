@@ -77,15 +77,35 @@ wsprintf equ <wsprintfA>
         db 15,15,15,15,15,15,15,15,15,15,15,15,15,15,15,15
         db 15,15,15,15,15,15,15,15,15,15,15,15,15,15,15,15
     
+    SINUS_SID_TB dw 0000h,0000h,0000h,0000h,0000h,0000h,0000h,0000h
+                dw 00FAh,01AAh,01F4h,01AAh,00F9h,0049h,0000h,0049h
+                dw 01F4h,0355h,03E8h,0355h,01F3h,0092h,0000h,0092h
+                dw 02EEh,0500h,05DCh,0500h,02EDh,00DBh,0000h,00DBh
+                dw 03E8h,06ABh,07D0h,06ABh,03E7h,0124h,0000h,0124h
+                dw 04E2h,0855h,09C4h,0855h,04E1h,016Eh,0000h,016Eh
+                dw 05DCh,0A00h,0BB8h,0A00h,05DBh,01B7h,0000h,01B7h
+                dw 06D6h,0BABh,0DACh,0BABh,06D5h,0200h,0000h,0200h
+                dw 07D0h,0D56h,0FA0h,0D56h,07CFh,0249h,0000h,0249h
+                dw 08CAh,0F00h,1194h,0F00h,08C9h,0293h,0000h,0293h
+                dw 09C4h,10ABh,1388h,10ABh,09C3h,02DCh,0000h,02DCh
+                dw 0ABEh,1256h,157Ch,1256h,0ABDh,0325h,0000h,0325h
+                dw 0BB8h,1401h,1770h,1401h,0BB7h,036Eh,0000h,036Eh
+                dw 0CB2h,15ACh,1964h,15ACh,0CB1h,03B7h,0000h,03B7h
+                dw 0DACh,1756h,1B58h,1756h,0DABh,0401h,0000h,0401h
+                dw 0EA6h,1901h,1D4Ch,1901h,0EA5h,044Ah,0000h,044Ah
+
     TIMER_PRESCALER_TB dd 0,4*TIMER_MULT,10*TIMER_MULT,16*TIMER_MULT,50*TIMER_MULT,64*TIMER_MULT,100*TIMER_MULT,200*TIMER_MULT
 
     szNameFile db "callme.ym",0
     szInfoFormat db "fredASMys - Mic, 2019",13,10,"Playing %s - %s",13,10,13,10,"Press any key to quit..",0
 
-    lpFileData		dd 0
-    bassState		dd STATE_UNDEFINED
+    lpFileData      dd 0
+    bassState       dd STATE_UNDEFINED
 
-    masterVolume REAL4 0.07f
+    masterVolume REAL4 0.30f
+
+    prevFiltered dd 0
+    prevUnfiltered dd 0
 
 .data?
     align 4
@@ -129,13 +149,13 @@ wsprintf equ <wsprintfA>
     YM_CHANNEL STRUCT
         counter DWORD ?
         period DWORD ?
-        num DWORD ?		; 0=A, 1=B, 2=C
+        num DWORD ?         ; 0=A, 1=B, 2=C
         lpCurVol DWORD ?
         volume WORD ?
         mode db ?
         tone db ?
         noise db ?
-        phase db ?		
+        phase db ?
     YM_CHANNEL ENDS
 
     YM_ENVGEN STRUCT
@@ -158,7 +178,7 @@ wsprintf equ <wsprintfA>
     YM_NOISEGEN ENDS
 
     SOFTWARE_EFFECT STRUCT
-	  num DWORD ?   ; 0 or 1
+      num DWORD ?        ; 0 or 1
       typ DWORD ?
       param  DWORD ?
       currentValue  DWORD ?
@@ -184,7 +204,7 @@ wsprintf equ <wsprintfA>
 COPY_BYTE MACRO dest,src,mask,shcount
     mov al,[src]
     and al,mask
-	shr al,shcount
+    shr al,shcount
     mov [dest],al
 ENDM
 
@@ -198,10 +218,10 @@ ENDM
  
 UPDATE_COUNTER MACRO oscillator, delta, endLabel
     mov eax,[&oscillator&.counter]
-	mov ebx,[&oscillator&.period]
+    mov ebx,[&oscillator&.period]
     add eax,[delta]
     cmp eax,ebx
-	mov [&oscillator&.counter],eax
+    mov [&oscillator&.counter],eax
     jl endLabel
     sub [&oscillator&.counter],ebx
 ENDM
@@ -245,6 +265,7 @@ RESET_EFFECT MACRO eff,regNum,endLabel
     imul ebx,eax,SIZEOF YM_CHANNEL
     add ebx,OFFSET chnA
     mov [&eff&.lpChannel],ebx
+    cmp ebx,[&eff&.lpChannelSticky]
     mov [&eff&.lpChannelSticky],ebx
 ENDM
 
@@ -270,12 +291,12 @@ start:
                       NULL,OPEN_EXISTING,
                       FILE_ATTRIBUTE_NORMAL,
                       NULL
-	cmp eax,INVALID_HANDLE_VALUE
-	je quit
+    cmp eax,INVALID_HANDLE_VALUE
+    je quit
     mov [hFile], eax
 
     invoke GetFileSize,hFile,NULL
-	mov [ymFileSize],eax
+    mov [ymFileSize],eax
 
     invoke LocalAlloc, LMEM_FIXED, ymFileSize
     test eax,eax
@@ -300,7 +321,7 @@ start:
     jz quit
     mov [hStream],eax
 
-    invoke BASS_SetVolume, masterVolume
+    invoke BASS_ChannelSetAttribute, hStream, BASS_ATTRIB_VOL, masterVolume
 
     invoke BASS_ChannelPlay, hStream, 0
     test eax,eax
@@ -346,14 +367,14 @@ streamproc PROC handle:DWORD, lpBuffer:LPVOID, bytesToWrite:DWORD, userData:DWOR
     invoke PeekConsoleInput, hConsoleInput, ADDR szBuffer, 1, ADDR bytesRead
     cmp [bytesRead],0
     je no_keypress_detected
-    ; Consume the event
+    ; Consume the input event
     invoke ReadConsoleInput, hConsoleInput, ADDR szBuffer, 1, ADDR bytesRead
     cmp (INPUT_RECORD PTR szBuffer).EventType,KEY_EVENT
     jne no_keypress_detected
     cmp (KEY_EVENT_RECORD PTR szBuffer+2).bKeyDown,0
     je no_keypress_detected
 
-    invoke SetEvent,hQuitEvent
+    invoke SetEvent, hQuitEvent
     mov eax,BASS_STREAMPROC_END
     jmp @F
 
@@ -369,12 +390,12 @@ set_enve_shape PROC enveShape:DWORD
     movzx eax,BYTE PTR [enve.maxStep]
     mov ecx,[enveShape]
     xor edx,edx
-    push esi					; attack = 0
+    push esi                    ; attack = 0
     mov [enve.step],eax
     test ecx,4
     mov esi,eax
     push ebx
-    cmovnz edx,eax				; if (enveShape & 4) attack = maxStep
+    cmovnz edx,eax              ; if (enveShape & 4) attack = maxStep
     mov ebx,[lpYmEnvTable]
     mov [enve.attack],edx
     xor esi,edx
@@ -383,14 +404,14 @@ set_enve_shape PROC enveShape:DWORD
     mov [enve.output],si
     jz envshape_no_continue
     xor ebx,ebx
-    mov edx,eax			
+    mov edx,eax
     test ecx,1
-    cmovz eax,ebx				; eax = (enveShape & 1) ? maxStep : 0  
+    cmovz eax,ebx               ; eax = (enveShape & 1) ? maxStep : 0  
     test ecx,2
-    cmovz edx,ebx				; edx = (enveShape & 2) ? maxStep : 0
+    cmovz edx,ebx               ; edx = (enveShape & 2) ? maxStep : 0
 envshape_no_continue:
-    mov [enve.hold],eax			; hold = (enveShape & 8) ? ((enveShape & 1) ? maxStep : 0) : maxStep
-    mov [enve.alternate],edx	; alternate = (enveShape & 8) ? ((enveShape & 2) ? maxStep : 0) : attack
+    mov [enve.hold],eax         ; hold = (enveShape & 8) ? ((enveShape & 1) ? maxStep : 0) : maxStep
+    mov [enve.alternate],edx    ; alternate = (enveShape & 8) ? ((enveShape & 2) ? maxStep : 0) : attack
     pop ebx
     pop esi
     ret 4
@@ -399,21 +420,21 @@ set_enve_shape ENDP
 
 set_level PROC lpChannel:DWORD,level:DWORD
     mov ecx,[lpChannel]
-	test ecx,ecx
-	ASSUME ecx:PTR YM_CHANNEL
+    test ecx,ecx
+    ASSUME ecx:PTR YM_CHANNEL
     jz return
     push ebx
     mov eax,[level]
     push esi
     mov edx,eax
-    and eax,10h					; eax = level & 10h
-    and edx,0Fh					; edx = level & 0Fh
+    and eax,10h                 ; eax = level & 10h
+    and edx,0Fh                 ; edx = level & 0Fh
     mov [ecx].mode,al
     lea ebx,[ecx].volume
     test eax,eax
     lea esi,[enve.output]
-    mov ax,[YM_VOL_TB + edx*2]	; ax = YM_VOL_TB[level & 0Fh]
-    cmovnz ebx,esi				; ebx = mode ? &enve.output : &lpChannel->volume
+    mov ax,[YM_VOL_TB + edx*2]  ; ax = YM_VOL_TB[level & 0Fh]
+    cmovnz ebx,esi              ; ebx = mode ? &enve.output : &lpChannel->volume
     mov [ecx].volume,ax
     mov [ecx].lpCurVol,ebx
     mov al,[chnA.mode]
@@ -423,7 +444,7 @@ set_level PROC lpChannel:DWORD,level:DWORD
     pop ebx
     xor al,10h
     mov BYTE PTR [enve.halt],al
-	ASSUME ecx:NOTHING
+    ASSUME ecx:NOTHING
 return:
     ret 8
 set_level ENDP
@@ -446,7 +467,10 @@ calc_tone_noise_masks PROC lpEffect:DWORD
     mov edx,[lpEffect]
     ASSUME edx:PTR SOFTWARE_EFFECT
     cmp [edx].typ,SFX_DIGI_DRUM
+    je @F
+    cmp [edx].typ,SFX_SINUS_SID
     jne return
+@@:
     cmp [edx].timerPeriod,0
     je return
     mov eax,[edx].lpChannel
@@ -488,14 +512,14 @@ step_digidrum_effect:
     and eax,0Fh
     push eax
     push [edx].lpChannel
-	push ebx
+    push ebx
     jmp set_level
 convert_u8_to_u4:
     ; ToDo: handle S8 format samples?
     movzx eax,BYTE PTR [YM_DIGIDRUM_8TO4_TB + eax]
     push eax
     push [edx].lpChannel
-	push ebx
+    push ebx
     jmp set_level
 end_of_sample:
     ; The end of this digidrum sample has been reached; stop the effect
@@ -504,22 +528,34 @@ end_of_sample:
     mov [edx].timerPeriod,0
     mov [edx].typ,SFX_NONE
     push edx
-	push ebx
+    push ebx
     jmp calc_tone_noise_masks
     ret
-	ASSUME edx:NOTHING
+    ASSUME edx:NOTHING
 
 
 step_sinus_sid_effect:
-    ; Not implemented
+    ASSUME edx:PTR SOFTWARE_EFFECT
+    mov eax,[edx].param          ; sample
+    mov ecx,[edx].currentValue   ; samplePos
+    shl eax,4
+    inc DWORD PTR [edx].currentValue
+    and DWORD PTR [edx].currentValue,7
+    movzx eax,WORD PTR [SINUS_SID_TB + eax + ecx*2]
+    mov ecx,[edx].lpChannel
+    ASSUME edx:NOTHING
+    mov (YM_CHANNEL PTR [ecx]).volume,ax
+    ; Force output of the 16-bit sample value (bypass volume table lookup)
+    lea edx,(YM_CHANNEL PTR [ecx]).volume
+    mov (YM_CHANNEL PTR [ecx]).lpCurVol,edx
     ret
 
 
 step_sync_buzz_effect:
     ASSUME edx:PTR SOFTWARE_EFFECT
-	pop ebx	; return address
+    pop ebx	; return address
     push [edx].param
-	push ebx
+    push ebx
     jmp set_enve_shape
     ASSUME edx:NOTHING
     
@@ -553,7 +589,7 @@ step_effect PROC lpEffect:DWORD
 return:
     ASSUME edx:NOTHING
     ret 4
-step_effect ENDP        
+step_effect ENDP
 
 
 start_effect PROC lpEffect:DWORD
@@ -566,17 +602,23 @@ start_effect PROC lpEffect:DWORD
     movzx ecx,BYTE PTR [ymRegs + YM_LEVEL_A + eax]
     cmp [edx].typ,SFX_DIGI_DRUM
     je start_digidrum
-    ; ToDo: handle Sinus-SID
+    cmp [edx].typ,SFX_SINUS_SID
+    je start_sinus_sid
     and ecx,0Fh
     cmp [edx].param,ecx
     je start_timer
     mov [edx].param,ecx
-    mov [edx].currentValue,ecx    
+    mov [edx].currentValue,ecx
     jmp start_timer
 start_digidrum:
     and ecx,1Fh
-    mov [edx].param,ecx			; sample = ymRegs[YM_LEVEL_A + lpEffect->lpChannel->num] & 1Fh
-    mov [edx].currentValue,0	; samplePos = 0
+    mov [edx].param,ecx         ; sample = ymRegs[YM_LEVEL_A + lpEffect->lpChannel->num] & 1Fh
+    mov [edx].currentValue,0    ; samplePos = 0
+    jmp start_timer
+start_sinus_sid:
+    and ecx,0Fh
+    mov [edx].param,ecx         
+    mov [edx].currentValue,0    ; samplePos = 0
 start_timer:
     mov ecx,[edx].num
     movzx eax,BYTE PTR [ymRegs + 6 + ecx*2]
@@ -683,7 +725,7 @@ done_parsing_digidrums:
 
     mov [frame],0
     mov [noise.lfsr],10000h
-	mov [noise.output],0
+    mov [noise.output],0
     
     movzx eax,WORD PTR [edx + 0Eh]
     ror ax,8
@@ -755,9 +797,9 @@ generate_samples:
     jne no_reg_updates
     movzx eax,BYTE PTR [ymRegs + YM_ENVE_SHAPE]
     cmp al,0FFh
-    je skip_set_enve_shape
+    je @F
     invoke set_enve_shape,eax
-skip_set_enve_shape:
+@@:
 
     COPY_BYTE [chnA.mode],[ymRegs + YM_LEVEL_A],10h,0
     COPY_BYTE [chnB.mode],[ymRegs + YM_LEVEL_B],10h,0
@@ -801,7 +843,7 @@ skip_set_enve_shape:
     mov ax,WORD PTR [ymRegs + YM_ENVE_FREQL]
     shl eax,16
     mov [enve.period],eax
-	
+
     lea ebx,[chnA.volume]
     cmp [chnA.mode],0
     lea ecx,[enve.output]
@@ -846,8 +888,13 @@ skip_set_enve_shape:
 setup_ym5_effects:
     RESET_EFFECT effect1,1,@F
     mov [effect1.typ],SFX_SID_VOICE
-@@:    
+@@:
     RESET_EFFECT effect2,3,@F
+    je same_channel
+    cmp [effect2.typ],SFX_DIGI_DRUM
+    jne same_channel
+    invoke calc_tone_noise_masks, ADDR effect2
+same_channel:
     mov [effect2.typ],SFX_DIGI_DRUM
 @@:
 
@@ -905,10 +952,30 @@ skip_noise_update:
     CALC_CHANNEL_OUTPUT B
     CALC_CHANNEL_OUTPUT C
 
+    ; eax is assumed to contain [outC]
     add eax,[outA]
     add eax,[outB]
-    add eax,9000h
-    mov [edi],ax
+    sub eax,11250
+
+    ; Lowpass filter parameters taken from the Hatari emulator
+    mov ebx,eax
+    add ebx,[prevUnfiltered]
+    cmp eax,[prevFiltered]
+    mov [prevUnfiltered],eax
+    jl @F
+    lea ebx,[ebx*2 + ebx]
+    mov ecx,[prevFiltered]
+    lea ebx,[ebx + ecx*2]
+    jmp output_sample
+@@:
+    mov ecx,[prevFiltered]
+    lea ecx,[ecx*2 + ecx]
+    lea ebx,[ebx + ecx*2]
+output_sample:
+    sar ebx,3
+    mov [edi],bx
+    mov [prevFiltered],ebx
+    
     add edi,2
 
     cmp [sampleCount],0
@@ -938,7 +1005,7 @@ reg_load_done:
     dec esi
     jnz generate_samples
     
-    popa    
+    popa
     ret 8
 ym_emu_run ENDP
 
