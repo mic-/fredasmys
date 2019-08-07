@@ -77,26 +77,26 @@ wsprintf equ <wsprintfA>
         db 15,15,15,15,15,15,15,15,15,15,15,15,15,15,15,15
         db 15,15,15,15,15,15,15,15,15,15,15,15,15,15,15,15
     
-    SINUS_SID_TB dw 0000h,0000h,0000h,0000h,0000h,0000h,0000h,0000h
-                dw 00FAh,01AAh,01F4h,01AAh,00F9h,0049h,0000h,0049h
-                dw 01F4h,0355h,03E8h,0355h,01F3h,0092h,0000h,0092h
-                dw 02EEh,0500h,05DCh,0500h,02EDh,00DBh,0000h,00DBh
-                dw 03E8h,06ABh,07D0h,06ABh,03E7h,0124h,0000h,0124h
-                dw 04E2h,0855h,09C4h,0855h,04E1h,016Eh,0000h,016Eh
-                dw 05DCh,0A00h,0BB8h,0A00h,05DBh,01B7h,0000h,01B7h
-                dw 06D6h,0BABh,0DACh,0BABh,06D5h,0200h,0000h,0200h
-                dw 07D0h,0D56h,0FA0h,0D56h,07CFh,0249h,0000h,0249h
-                dw 08CAh,0F00h,1194h,0F00h,08C9h,0293h,0000h,0293h
-                dw 09C4h,10ABh,1388h,10ABh,09C3h,02DCh,0000h,02DCh
-                dw 0ABEh,1256h,157Ch,1256h,0ABDh,0325h,0000h,0325h
-                dw 0BB8h,1401h,1770h,1401h,0BB7h,036Eh,0000h,036Eh
-                dw 0CB2h,15ACh,1964h,15ACh,0CB1h,03B7h,0000h,03B7h
-                dw 0DACh,1756h,1B58h,1756h,0DABh,0401h,0000h,0401h
-                dw 0EA6h,1901h,1D4Ch,1901h,0EA5h,044Ah,0000h,044Ah
+    SINUS_SID_TB db 00h,00h,00h,00h,00h,00h,00h,00h
+                db 00h,00h,01h,00h,00h,00h,00h,00h
+                db 01h,01h,02h,01h,01h,00h,00h,00h
+                db 01h,02h,03h,02h,01h,00h,00h,00h
+                db 02h,03h,04h,03h,02h,00h,00h,00h
+                db 02h,04h,05h,04h,02h,00h,00h,00h
+                db 03h,05h,06h,05h,03h,00h,00h,00h
+                db 03h,06h,07h,06h,03h,01h,00h,01h
+                db 04h,07h,08h,07h,04h,01h,00h,01h
+                db 04h,08h,09h,08h,04h,01h,00h,01h
+                db 05h,09h,0Ah,09h,05h,01h,00h,01h
+                db 05h,0Ah,0Bh,0Ah,05h,01h,00h,01h
+                db 06h,0Ah,0Ch,0Ah,06h,01h,00h,01h
+                db 06h,0Bh,0Dh,0Bh,06h,02h,00h,02h
+                db 07h,0Ch,0Eh,0Ch,07h,02h,00h,02h
+                db 08h,0Dh,0Fh,0Dh,07h,02h,00h,02h
 
     TIMER_PRESCALER_TB dd 0,4*TIMER_MULT,10*TIMER_MULT,16*TIMER_MULT,50*TIMER_MULT,64*TIMER_MULT,100*TIMER_MULT,200*TIMER_MULT
 
-    szNameFile db "callme.ym",0
+    szNameFile db "dancer.ym",0
     szInfoFormat db "fredASMys - Mic, 2019",13,10,"Playing %s - %s",13,10,13,10,"Press any key to quit..",0
 
     lpFileData      dd 0
@@ -538,16 +538,16 @@ step_sinus_sid_effect:
     ASSUME edx:PTR SOFTWARE_EFFECT
     mov eax,[edx].param          ; sample
     mov ecx,[edx].currentValue   ; samplePos
-    shl eax,4
+    and ecx,7
     inc DWORD PTR [edx].currentValue
     and DWORD PTR [edx].currentValue,7
-    movzx eax,WORD PTR [SINUS_SID_TB + eax + ecx*2]
-    mov ecx,[edx].lpChannel
+    movzx eax,BYTE PTR [SINUS_SID_TB + eax*8 + ecx]
+    pop ebx     ; return address
+    push eax
+    push [edx].lpChannel
+    push ebx
+    jmp set_level
     ASSUME edx:NOTHING
-    mov (YM_CHANNEL PTR [ecx]).volume,ax
-    ; Force output of the 16-bit sample value (bypass volume table lookup)
-    lea edx,(YM_CHANNEL PTR [ecx]).volume
-    mov (YM_CHANNEL PTR [ecx]).lpCurVol,edx
     ret
 
 
@@ -617,8 +617,7 @@ start_digidrum:
     jmp start_timer
 start_sinus_sid:
     and ecx,0Fh
-    mov [edx].param,ecx         
-    mov [edx].currentValue,0    ; samplePos = 0
+    mov [edx].param,ecx
 start_timer:
     mov ecx,[edx].num
     movzx eax,BYTE PTR [ymRegs + 6 + ecx*2]
@@ -917,10 +916,10 @@ no_reg_updates:
     mov eax,[enve.alternate]
     mov ebx,[enve.hold]
     movzx ecx,BYTE PTR [enve.maxStep]
-    xor [enve.attack],eax	; attack ^= alternate
-    xor ecx,ebx				
-    mov [enve.halt],ebx		; halt = hold
-    and [enve.step],ecx		; step &= (hold ^ maxStep)
+    xor [enve.attack],eax   ; attack ^= alternate
+    xor ecx,ebx
+    mov [enve.halt],ebx     ; halt = hold
+    and [enve.step],ecx     ; step &= (hold ^ maxStep)
 envelope_not_at_end:
     mov eax,[enve.step]
     mov ecx,[lpYmEnvTable]
@@ -934,12 +933,12 @@ skip_envelope_update:
     mov ebx,eax
     mov ecx,eax
     and ebx,1
-    shr eax,1				; eax = lfsr >> 1
+    shr eax,1               ; eax = lfsr >> 1
     shr ecx,3
-    mov [noise.output],bx	; output = lfsr & 1
+    mov [noise.output],bx   ; output = lfsr & 1
     and ecx,1
     xor ebx,ecx
-    shl ebx,16				; ebx = (output ^ ((lfsr >> 3) & 1)) << 16
+    shl ebx,16              ; ebx = (output ^ ((lfsr >> 3) & 1)) << 16
     or eax,ebx
     mov [noise.lfsr],eax
 skip_noise_update:
