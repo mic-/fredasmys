@@ -96,7 +96,7 @@ wsprintf equ <wsprintfA>
 
     TIMER_PRESCALER_TB dd 0,4*TIMER_MULT,10*TIMER_MULT,16*TIMER_MULT,50*TIMER_MULT,64*TIMER_MULT,100*TIMER_MULT,200*TIMER_MULT
 
-    szNameFile db "dancer.ym",0
+    szNameFile db "callme.ym",0
     szInfoFormat db "fredASMys - Mic, 2019",13,10,"Playing %s - %s",13,10,13,10,"Press any key to quit..",0
 
     lpFileData      dd 0
@@ -156,6 +156,7 @@ wsprintf equ <wsprintfA>
         tone db ?
         noise db ?
         phase db ?
+        padding WORD ?
     YM_CHANNEL ENDS
 
     YM_ENVGEN STRUCT
@@ -168,6 +169,7 @@ wsprintf equ <wsprintfA>
         alternate DWORD ?
         output WORD ?
         maxStep db ?
+        padding db ?
     YM_ENVGEN ENDS
 
     YM_NOISEGEN STRUCT
@@ -175,6 +177,7 @@ wsprintf equ <wsprintfA>
         period DWORD ?
         lfsr DWORD ?
         output WORD ?
+        padding WORD ?
     YM_NOISEGEN ENDS
 
     SOFTWARE_EFFECT STRUCT
@@ -188,6 +191,7 @@ wsprintf equ <wsprintfA>
       lpChannelSticky DWORD ?
     SOFTWARE_EFFECT ENDS
 
+    align 16
     chnA YM_CHANNEL <>
     chnB YM_CHANNEL <>
     chnC YM_CHANNEL <>
@@ -219,7 +223,7 @@ ENDM
 UPDATE_COUNTER MACRO oscillator, delta, endLabel
     mov eax,[&oscillator&.counter]
     mov ebx,[&oscillator&.period]
-    add eax,[delta]
+    add eax,delta
     cmp eax,ebx
     mov [&oscillator&.counter],eax
     jl endLabel
@@ -269,8 +273,20 @@ RESET_EFFECT MACRO eff,regNum,endLabel
     mov [&eff&.lpChannelSticky],ebx
 ENDM
 
+PUTS MACRO string
+    LOCAL _szStr
+    LOCAL _skip
+    jmp _skip
+    .data
+    _szStr db &string&,13,10,0
+    .code
+    _skip:
+    invoke WriteConsole, hConsole, ADDR _szStr ,SIZEOF _szStr, ADDR bytesRead, NULL
+ENDM
+
 ;----------------------------------------------------------------------------------------
 
+play_ym_file PROTO STDCALL
 ym_emu_init PROTO STDCALL :DWORD
 ym_emu_run PROTO STDCALL :DWORD,:DWORD
 streamproc PROTO STDCALL :DWORD,:DWORD,:DWORD,:DWORD
@@ -285,6 +301,12 @@ start:
     invoke GetStdHandle,STD_INPUT_HANDLE
     mov [hConsoleInput],eax
 
+    invoke play_ym_file
+    invoke ExitProcess, 0
+
+;----------------------------------------------------------------------------------------
+
+play_ym_file PROC
     invoke CreateFile,ADDR szNameFile,
                       GENERIC_READ,
                       FILE_SHARE_READ,
@@ -292,7 +314,10 @@ start:
                       FILE_ATTRIBUTE_NORMAL,
                       NULL
     cmp eax,INVALID_HANDLE_VALUE
-    je quit
+    jne @F
+    PUTS "Error: Unable to open YM file"
+    jmp quit
+@@:
     mov [hFile], eax
 
     invoke GetFileSize,hFile,NULL
@@ -300,11 +325,20 @@ start:
 
     invoke LocalAlloc, LMEM_FIXED, ymFileSize
     test eax,eax
-    jz quit
+    jnz @F
+    PUTS "Error: Failed to allocate memory for YM data"
+    jmp quit
+@@:
     mov [lpFileData],eax
 
     invoke ReadFile, hFile, lpFileData, ymFileSize, ADDR bytesRead, NULL
     invoke CloseHandle, hFile
+    mov eax,[ymFileSize]
+    cmp eax,[bytesRead]
+    je @F
+    PUTS "Error: Failed to read YM file contents"
+    jmp quit
+@@:
 
     invoke ym_emu_init, lpFileData
 
@@ -313,19 +347,28 @@ start:
 
     invoke BASS_Init,-1, SAMPLE_RATE, BASS_DEVICE_MONO, 0, 0
     test eax,eax
-    jz quit
+    jnz @F
+    PUTS "Error: Failed to initialize audio output device"
+    jmp quit
+@@:
     mov [bassState],STATE_INITED
 
     invoke BASS_StreamCreate, SAMPLE_RATE, 1, BASS_STREAM_AUTOFREE, streamproc, 0
     test eax,eax
-    jz quit
+    jnz @F
+    PUTS "Error: Failed to create audio output stream"
+    jmp quit
+@@:
     mov [hStream],eax
 
     invoke BASS_ChannelSetAttribute, hStream, BASS_ATTRIB_VOL, masterVolume
 
     invoke BASS_ChannelPlay, hStream, 0
     test eax,eax
-    jz quit
+    jnz @F
+    PUTS "Error: Failed to start playback"
+    jmp quit
+@@:
     mov [bassState],STATE_STARTED
 
     invoke wsprintf, ADDR szBuffer, ADDR szInfoFormat, lpYmSongAuthor, lpYmSongTitle
@@ -335,9 +378,9 @@ start:
 
     quit:
     invoke cleanup
-    invoke ExitProcess, 0
+    ret
+play_ym_file ENDP
 
-;----------------------------------------------------------------------------------------
 
 cleanup PROC
     cmp [bassState],STATE_STARTED
@@ -562,7 +605,8 @@ step_sync_buzz_effect:
 
 .data
 align 16
-step_effect_jmp_table dd OFFSET step_sid_voice_effect
+step_effect_jmp_table label DWORD
+    dd OFFSET step_sid_voice_effect
     dd OFFSET step_digidrum_effect
     dd OFFSET step_sinus_sid_effect
     dd OFFSET step_sync_buzz_effect
@@ -572,13 +616,11 @@ step_effect_jmp_table dd OFFSET step_sid_voice_effect
 step_effect PROC lpEffect:DWORD
     ASSUME edx:PTR SOFTWARE_EFFECT
     mov edx,[lpEffect]
-    cmp [edx].timerPeriod,0
-    je return
     mov eax,[speedTimer1]
     mov ecx,[edx].timerPeriod
     add [edx].timerCount,eax
     cmp [edx].timerCount,ecx
-    jl return   
+    jl return
     sub [edx].timerCount,ecx
     mov eax,[edx].typ
     cmp eax,SFX_SID_VOICE
@@ -908,6 +950,21 @@ no_reg_updates:
     UPDATE_CHANNEL_COUNTER chnB, edx
     UPDATE_CHANNEL_COUNTER chnC, edx
 
+    UPDATE_COUNTER noise, edx, skip_noise_update
+    mov eax,[noise.lfsr]
+    mov ebx,eax
+    mov ecx,eax
+    and ebx,1
+    shr eax,1               ; eax = lfsr >> 1
+    shr ecx,3
+    mov [noise.output],bx   ; output = lfsr & 1
+    and ecx,1
+    xor ebx,ecx
+    shl ebx,16              ; ebx = (output ^ ((lfsr >> 3) & 1)) << 16
+    or eax,ebx
+    mov [noise.lfsr],eax
+skip_noise_update:
+    
     cmp [enve.halt],0
     jne skip_envelope_update
     UPDATE_COUNTER enve,speedEnve,skip_envelope_update
@@ -928,23 +985,14 @@ envelope_not_at_end:
     mov [enve.output],bx
 skip_envelope_update:
 
-    UPDATE_COUNTER noise,speedToneNoise,skip_noise_update
-    mov eax,[noise.lfsr]
-    mov ebx,eax
-    mov ecx,eax
-    and ebx,1
-    shr eax,1               ; eax = lfsr >> 1
-    shr ecx,3
-    mov [noise.output],bx   ; output = lfsr & 1
-    and ecx,1
-    xor ebx,ecx
-    shl ebx,16              ; ebx = (output ^ ((lfsr >> 3) & 1)) << 16
-    or eax,ebx
-    mov [noise.lfsr],eax
-skip_noise_update:
-
+    cmp [effect1.timerPeriod],0
+    je @F
     invoke step_effect, ADDR effect1
+@@:
+    cmp [effect2.timerPeriod],0
+    je @F
     invoke step_effect, ADDR effect2
+@@:
 
     mov dl,BYTE PTR [noise.output]
     CALC_CHANNEL_OUTPUT A
